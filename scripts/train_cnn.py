@@ -40,6 +40,18 @@ def evaluate_loss(model: nn.Module, loader: DataLoader, device: torch.device, po
     return float(np.mean(losses)) if losses else 0.0
 
 
+def load_resume_model(model: MinesweeperCNN, resume_path: str, device: torch.device) -> bool:
+    path = Path(resume_path)
+    if not path.exists():
+        print(f'resume model not found: {path}; training from scratch')
+        return False
+
+    ckpt = torch.load(path, map_location=device)
+    model.load_state_dict(ckpt['model_state'])
+    print(f'loaded resume model: {path}')
+    return True
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument('--data', type=str, required=True)
@@ -47,6 +59,7 @@ def main() -> None:
     p.add_argument('--batch-size', type=int, default=64)
     p.add_argument('--lr', type=float, default=1e-3)
     p.add_argument('--hidden', type=int, default=64)
+    p.add_argument('--resume', type=str, default=None, help='existing model checkpoint to continue from')
     p.add_argument('--out', type=str, default='minesweeper_cnn.pt')
     args = p.parse_args()
 
@@ -75,12 +88,14 @@ def main() -> None:
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = MinesweeperCNN(in_channels=X.shape[1], hidden=args.hidden).to(device)
+    resumed = load_resume_model(model, args.resume, device) if args.resume else False
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
     pos_weight = torch.tensor(pos_weight_value, dtype=torch.float32, device=device)
 
     print(f'device: {device}')
     print(f'samples: {n}, train: {len(train_idx)}, val: {len(val_idx)}')
     print(f'pos_weight: {pos_weight_value:.3f}')
+    print(f'resumed: {resumed}')
 
     best_val = float('inf')
 
@@ -111,6 +126,9 @@ def main() -> None:
                     'mines': mines,
                     'in_channels': int(X.shape[1]),
                     'hidden': args.hidden,
+                    'resumed': resumed,
+                    'samples': n,
+                    'best_val_loss': best_val,
                 },
                 args.out,
             )
