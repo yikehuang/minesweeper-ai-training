@@ -1,0 +1,235 @@
+name: Train To Target Win Rate
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_rate:
+        description: 'Target win rate, for example 0.50'
+        required: true
+        default: '0.50'
+      max_rounds:
+        description: 'Maximum training rounds'
+        required: true
+        default: '8'
+      games_per_round:
+        description: 'New simulated games per round'
+        required: true
+        default: '1000'
+      epochs_per_round:
+        description: 'Additional epochs per round'
+        required: true
+        default: '4'
+      eval_games:
+        description: 'Evaluation games per round'
+        required: true
+        default: '100'
+      width:
+        description: 'Board width'
+        required: true
+        default: '30'
+      height:
+        description: 'Board height'
+        required: true
+        default: '16'
+      mines:
+        description: 'Mine count'
+        required: true
+        default: '99'
+  push:
+    branches: [main]
+    paths:
+      - '.github/train-to-target-trigger.txt'
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  train-to-target:
+    runs-on: ubuntu-latest
+
+    env:
+      TARGET_RATE: ${{ github.event.inputs.target_rate || '0.50' }}
+      MAX_ROUNDS: ${{ github.event.inputs.max_rounds || '8' }}
+      GAMES_PER_ROUND: ${{ github.event.inputs.games_per_round || '1000' }}
+      EPOCHS_PER_ROUND: ${{ github.event.inputs.epochs_per_round || '4' }}
+      EVAL_GAMES: ${{ github.event.inputs.eval_games || '100' }}
+      RUN_WIDTH: ${{ github.event.inputs.width || '30' }}
+      RUN_HEIGHT: ${{ github.event.inputs.height || '16' }}
+      RUN_MINES: ${{ github.event.inputs.mines || '99' }}
+      STATE_DIR: training_state
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Restore training cache
+        uses: actions/cache@v4
+        with:
+          path: training_state
+          key: minesweeper-training-state-${{ github.run_id }}
+          restore-keys: |
+            minesweeper-training-state-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy torch
+
+      - name: Try downloading previous artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$STATE_DIR"
+          if [ -f "$STATE_DIR/data_online.npz" ] && [ -f "$STATE_DIR/model_online.pt" ]; then
+            echo "Cached dataset and model found."
+            exit 0
+          fi
+
+          echo "No complete cache found. Trying to download latest previous artifact."
+          set +e
+          for WF in "train-to-50.yml" "continue-training.yml" "train-model.yml"; do
+            RUN_ID=$(gh run list --workflow "$WF" --branch main --status success --limit 10 --json databaseId,headSha --jq "[.[] | select(.headSha != \"${GITHUB_SHA}\")] | .[0].databaseId")
+            if [ -n "$RUN_ID" ] && [ "$RUN_ID" != "null" ]; then
+              echo "Trying artifact from workflow $WF run $RUN_ID"
+              gh run download "$RUN_ID" --name minesweeper-training-output --dir "$STATE_DIR"
+              if [ -f "$STATE_DIR/data_online.npz" ] && [ -f "$STATE_DIR/model_online.pt" ]; then
+                echo "Downloaded previous training artifact."
+                break
+              fi
+            fi
+          done
+          set -e
+          ls -lah "$STATE_DIR" || true
+
+      - name: Train until target win rate
+        run: |
+          mkdir -p "$STATE_DIR" results
+          : > "$STATE_DIR/target_loop_log.txt"
+          echo "target_rate=$TARGET_RATE" | tee -a "$STATE_DIR/target_loop_log.txt"
+          echo "max_rounds=$MAX_ROUNDS" | tee -a "$STATE_DIR/target_loop_log.txt"
+          echo "games_per_round=$GAMES_PER_ROUND" | tee -a "$STATE_DIR/target_loop_log.txt"
+          echo "epochs_per_round=$EPOCHS_PER_ROUND" | tee -a "$STATE_DIR/target_loop_log.txt"
+          echo "eval_games=$EVAL_GAMES" | tee -a "$STATE_DIR/target_loop_log.txt"
+
+          BEST_RATE="0"
+          BEST_ROUND="0"
+          TARGET_REACHED="false"
+
+          for ROUND in $(seq 1 "$MAX_ROUNDS"); do
+            echo "================ ROUND $ROUND ================" | tee -a "$STATE_DIR/target_loop_log.txt"
+
+            python scripts/append_dataset.py \
+              --existing "$STATE_DIR/data_online.npz" \
+              --out "$STATE_DIR/data_online.npz" \
+              --width "$RUN_WIDTH" \
+              --height "$RUN_HEIGHT" \
+              --mines "$RUN_MINES" \
+              --games "$GAMES_PER_ROUND" | tee "$STATE_DIR/append_round_${ROUND}.txt"
+            cat "$STATE_DIR/append_round_${ROUND}.txt" >> "$STATE_DIR/target_loop_log.txt"
+
+            RESUME_ARGS=""
+            if [ -f "$STATE_DIR/model_online.pt" ]; then
+              RESUME_ARGS="--resume $STATE_DIR/model_online.pt"
+            fi
+
+            python scripts/train_cnn.py \
+              --data "$STATE_DIR/data_online.npz" \
+              --epochs "$EPOCHS_PER_ROUND" \
+              --batch-size 32 \
+              --out "$STATE_DIR/model_online.pt" \
+              $RESUME_ARGS | tee "$STATE_DIR/train_round_${ROUND}.txt"
+            cat "$STATE_DIR/train_round_${ROUND}.txt" >> "$STATE_DIR/target_loop_log.txt"
+
+            python scripts/evaluate.py \
+              --games "$EVAL_GAMES" \
+              --width "$RUN_WIDTH" \
+              --height "$RUN_HEIGHT" \
+              --mines "$RUN_MINES" \
+              --model "$STATE_DIR/model_online.pt" | tee "$STATE_DIR/eval_round_${ROUND}.txt"
+            cat "$STATE_DIR/eval_round_${ROUND}.txt" >> "$STATE_DIR/target_loop_log.txt"
+
+            WIN_RATE=$(python - "$STATE_DIR/eval_round_${ROUND}.txt" <<'PY'
+import ast
+import re
+import sys
+text = open(sys.argv[1], encoding='utf-8').read()
+matches = re.findall(r"\{[^{}]*'games'[^{}]*\}", text)
+if not matches:
+    print('0')
+else:
+    data = ast.literal_eval(matches[-1])
+    print(data.get('win_rate', 0))
+PY
+)
+            echo "round_${ROUND}_win_rate=$WIN_RATE" | tee -a "$STATE_DIR/target_loop_log.txt"
+
+            if python - "$WIN_RATE" "$BEST_RATE" <<'PY'
+import sys
+sys.exit(0 if float(sys.argv[1]) > float(sys.argv[2]) else 1)
+PY
+            then
+              BEST_RATE="$WIN_RATE"
+              BEST_ROUND="$ROUND"
+            fi
+
+            if python - "$WIN_RATE" "$TARGET_RATE" <<'PY'
+import sys
+sys.exit(0 if float(sys.argv[1]) >= float(sys.argv[2]) else 1)
+PY
+            then
+              TARGET_REACHED="true"
+              echo "Target reached at round $ROUND with win_rate=$WIN_RATE" | tee -a "$STATE_DIR/target_loop_log.txt"
+              break
+            fi
+          done
+
+          echo "best_rate=$BEST_RATE" | tee -a "$STATE_DIR/target_loop_log.txt"
+          echo "best_round=$BEST_ROUND" | tee -a "$STATE_DIR/target_loop_log.txt"
+          echo "target_reached=$TARGET_REACHED" | tee -a "$STATE_DIR/target_loop_log.txt"
+
+          {
+            echo "# Target Training Result"
+            echo
+            echo "- Run ID: $GITHUB_RUN_ID"
+            echo "- Commit: $GITHUB_SHA"
+            echo "- Board: ${RUN_WIDTH}x${RUN_HEIGHT}"
+            echo "- Mines: ${RUN_MINES}"
+            echo "- Target win rate: ${TARGET_RATE}"
+            echo "- Max rounds: ${MAX_ROUNDS}"
+            echo "- Games per round: ${GAMES_PER_ROUND}"
+            echo "- Epochs per round: ${EPOCHS_PER_ROUND}"
+            echo "- Eval games: ${EVAL_GAMES}"
+            echo "- Best round: ${BEST_ROUND}"
+            echo "- Best win rate: ${BEST_RATE}"
+            echo "- Target reached: ${TARGET_REACHED}"
+            echo "- Generated at: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+            echo
+            echo "## Full loop log"
+            echo '```text'
+            cat "$STATE_DIR/target_loop_log.txt" || true
+            echo '```'
+          } > results/target-training-result.md
+
+      - name: Push target result report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add results/target-training-result.md
+          git commit -m "Update target training result" || echo "No result changes to commit"
+          git push || true
+
+      - name: Upload target training artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: minesweeper-training-output
+          path: |
+            training_state/data_online.npz
+            training_state/model_online.pt
+            training_state/target_loop_log.txt
+            results/target-training-result.md
