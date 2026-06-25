@@ -16,10 +16,50 @@ minesweeper_ai_training/
 │  ├─ train_cnn.py         # 训练模型
 │  ├─ evaluate.py          # 评估纯逻辑 / 逻辑+模型胜率
 │  └─ smoke_test.py        # 快速测试安装是否正常
+├─ .github/workflows/
+│  ├─ smoke-test.yml       # GitHub Actions 在线测试
+│  └─ train-model.yml      # GitHub Actions 在线训练
 └─ requirements.txt
 ```
 
-## 安装
+## 线上运行：GitHub Actions
+
+这个仓库已经配置 GitHub Actions。你可以在 GitHub 网页上运行代码，不需要在本机安装 Git、pip 或 PyTorch。
+
+### 在线快速测试
+
+1. 打开仓库页面。
+2. 点击顶部的 **Actions**。
+3. 选择左侧的 **Smoke Test**。
+4. 点击 **Run workflow**。
+5. 等待运行完成，查看日志。
+
+这个工作流会执行：
+
+```bash
+python scripts/smoke_test.py
+python scripts/evaluate.py --games 20 --width 9 --height 9 --mines 10
+```
+
+### 在线训练模型
+
+1. 打开仓库页面。
+2. 点击顶部的 **Actions**。
+3. 选择左侧的 **Train Minesweeper Model**。
+4. 点击 **Run workflow**。
+5. 参数可以先保持默认：`games=200`、`epochs=3`。
+6. 运行结束后，在该次 workflow 页面底部下载 artifact：`minesweeper-training-output`。
+
+artifact 里面包含：
+
+```text
+data_online.npz
+model_online.pt
+```
+
+其中 `model_online.pt` 是训练好的模型文件。
+
+## 本地安装
 
 建议使用 Python 3.10 或以上版本。
 
@@ -33,7 +73,7 @@ pip install -r requirements.txt
 pip install numpy
 ```
 
-## 快速测试
+## 本地快速测试
 
 ```bash
 python scripts/smoke_test.py
