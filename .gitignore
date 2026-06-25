@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.npz
+*.pt
+*.pth
+*.onnx
+.env
+.venv/
+venv/
+.idea/
+.vscode/
+.DS_Store
