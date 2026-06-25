@@ -1,0 +1,6 @@
+run online training
+triggered_by=chatgpt
+run_games=200
+run_epochs=3
+board=30x16
+mines=99
