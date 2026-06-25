@@ -4,3 +4,4 @@ append_games=500
 extra_epochs=5
 board=30x16
 mines=99
+trigger_round=2
