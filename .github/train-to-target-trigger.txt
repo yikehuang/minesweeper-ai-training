@@ -1,0 +1,9 @@
+train to target win rate
+triggered_by=chatgpt
+target_rate=0.50
+max_rounds=8
+games_per_round=1000
+epochs_per_round=4
+eval_games=100
+board=30x16
+mines=99
