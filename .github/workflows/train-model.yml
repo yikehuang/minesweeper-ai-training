@@ -23,10 +23,21 @@ on:
         description: 'Mine count'
         required: true
         default: '99'
+  push:
+    branches: [main]
+    paths:
+      - '.github/run-online-training.txt'
 
 jobs:
   train:
     runs-on: ubuntu-latest
+
+    env:
+      RUN_GAMES: ${{ github.event.inputs.games || '200' }}
+      RUN_EPOCHS: ${{ github.event.inputs.epochs || '3' }}
+      RUN_WIDTH: ${{ github.event.inputs.width || '30' }}
+      RUN_HEIGHT: ${{ github.event.inputs.height || '16' }}
+      RUN_MINES: ${{ github.event.inputs.mines || '99' }}
 
     steps:
       - name: Check out repository
@@ -45,17 +56,17 @@ jobs:
       - name: Collect dataset
         run: |
           python scripts/collect_dataset.py \
-            --width ${{ github.event.inputs.width }} \
-            --height ${{ github.event.inputs.height }} \
-            --mines ${{ github.event.inputs.mines }} \
-            --games ${{ github.event.inputs.games }} \
+            --width "$RUN_WIDTH" \
+            --height "$RUN_HEIGHT" \
+            --mines "$RUN_MINES" \
+            --games "$RUN_GAMES" \
             --out data_online.npz
 
       - name: Train CNN
         run: |
           python scripts/train_cnn.py \
             --data data_online.npz \
-            --epochs ${{ github.event.inputs.epochs }} \
+            --epochs "$RUN_EPOCHS" \
             --batch-size 32 \
             --out model_online.pt
 
@@ -63,9 +74,9 @@ jobs:
         run: |
           python scripts/evaluate.py \
             --games 50 \
-            --width ${{ github.event.inputs.width }} \
-            --height ${{ github.event.inputs.height }} \
-            --mines ${{ github.event.inputs.mines }} \
+            --width "$RUN_WIDTH" \
+            --height "$RUN_HEIGHT" \
+            --mines "$RUN_MINES" \
             --model model_online.pt
 
       - name: Upload dataset and model artifacts
